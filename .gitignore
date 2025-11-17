@@ -1,0 +1,22 @@
+/cache/
+/gifs/
+/spider
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+.DS_Store
+.vscode/
+.idea/
+.env
+# Go build outputs
+/bin/
+*.out
+
+# macOS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
