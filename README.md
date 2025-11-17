@@ -1,5 +1,5 @@
 # Golang_FinalProject
-可以一次爬多張 https://www.gif-vif.com/gifs/gifs 上的圖片
+可以一次爬多張 https://www.gif-vif.com/gifs/gifs 上的圖片  
  執行：  
  ```
  go mod tidy
