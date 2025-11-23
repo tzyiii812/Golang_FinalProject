@@ -27,5 +27,11 @@ go run main.go database.go data_importer.go
 Web 服務已啟動，請訪問 http://localhost:8080/...
 [GIN] Listening and serving HTTP on :8080
 ```
-測試：
-直接在瀏覽器中開啟 index.html 檔案進行測試：
+網頁主頁測試：  
+直接在瀏覽器中開啟 index.html 檔案進行測試    
+
+API 測試（後端功能驗證）：  
+隨機生成	http://localhost:8080/api/random  
+搜尋功能	http://localhost:8080/api/search?q=cat  
+查詢錯誤	http://localhost:8080/api/search  
+
