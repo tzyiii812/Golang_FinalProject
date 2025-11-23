@@ -4,119 +4,97 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/gocolly/colly/v2"
 )
 
-// downloadGIF 負責下載單一 GIF 檔案 (保持不變)
-func downloadGIF(gifURL string) {
-	parts := strings.Split(gifURL, "/")
-	fileName := parts[len(parts)-1]
+// -----------------------------------------------------
+// 數據結構與工具
+// -----------------------------------------------------
 
-	if fileName == "" || !strings.HasSuffix(strings.ToLower(fileName), ".gif") {
-		log.Printf("[SKIP] 無效或非 GIF 連結: %s", gifURL)
-		return
+// ExportMeme, Meme 結構體已在 database.go 中定義，此處無需重複宣告。
+
+var outputMutex sync.Mutex
+
+// initExportFile 負責在程式啟動時，清理或初始化輸出檔案
+func initExportFile() {
+	if err := os.Remove(ExportFile); err == nil {
+		log.Printf("[INFO] 舊的輸出檔案 %s 已刪除。", ExportFile)
+	} else if !os.IsNotExist(err) {
+		log.Printf("[ERROR] 無法移除舊檔案: %v", err)
 	}
-
-	// 創建 gifs 目錄
-	if _, err := os.Stat("gifs"); os.IsNotExist(err) {
-		os.Mkdir("gifs", 0755)
-	}
-	filePath := filepath.Join("gifs", fileName)
-
-	// 檢查檔案是否已存在，避免重複下載
-	if _, err := os.Stat(filePath); err == nil {
-		fmt.Printf("[INFO] 檔案已存在，跳過: %s\n", fileName)
-		return
-	}
-
-	fmt.Printf("[DOWNLOAD] 正在下載: %s\n", fileName)
-
-	// 發送 HTTP 請求下載檔案
-	resp, err := http.Get(gifURL)
-	if err != nil {
-		log.Printf("[ERROR] 下載失敗 (%s): %v", fileName, err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		log.Printf("[ERROR] 下載失敗，HTTP 狀態碼: %d (%s)", resp.StatusCode, fileName)
-		return
-	}
-
-	// 創建並寫入檔案
-	out, err := os.Create(filePath)
-	if err != nil {
-		log.Printf("[ERROR] 建立檔案失敗 (%s): %v", fileName, err)
-		return
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		log.Printf("[ERROR] 寫入檔案失敗 (%s): %v", fileName, err)
-		return
-	}
-
-	fmt.Printf("[SUCCESS] 檔案儲存成功: %s\n", fileName)
 }
 
-// scrapeSingleGIFPage 負責進入單一 GIF 頁面並找出實際的 GIF URL (保持不變)
-func scrapeSingleGIFPage(url string) {
-	c := colly.NewCollector()
+// saveToJSON 負責將單筆數據安全地寫入 JSON 檔案
+// 注意：此處使用的 ExportMeme 結構體定義在 database.go 中
+func saveToJSON(meme ExportMeme) {
+	outputMutex.Lock()
+	defer outputMutex.Unlock()
 
-	// 選擇器: 抓取實際 GIF 檔案的 URL (img.media-show)
-	c.OnHTML(`img.media-show`, func(e *colly.HTMLElement) {
-		gifURL := e.Attr("src")
-		fullGIFURL := e.Request.AbsoluteURL(gifURL)
-		downloadGIF(fullGIFURL)
-	})
+	f, err := os.OpenFile(ExportFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("[ERROR] 無法開啟 JSON 檔案: %v", err)
+		return
+	}
+	defer f.Close()
 
-	c.OnError(func(r *colly.Response, err error) {
-		log.Printf("[ERROR] 爬取單頁失敗: %s: URL: %s", err, r.Request.URL)
-	})
+	data, err := json.Marshal(meme)
+	if err != nil {
+		log.Printf("[ERROR] JSON 編碼失敗: %v", err)
+		return
+	}
 
-	c.Visit(url)
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		log.Printf("[ERROR] 寫入 JSON 檔案失敗: %v", err)
+	}
 }
 
+// -----------------------------------------------------
+// 爬蟲主邏輯
+// -----------------------------------------------------
+
+// main 是 spider.go 程式的單獨入口點
 func main() {
-	// 設置主 Collector，負責處理 API 請求
+	RunSpider()
+}
+
+// RunSpider 包含所有爬蟲的執行邏輯 (原來的 main 函數內容)
+func RunSpider() {
+	// 1. 初始化輸出檔案
+	initExportFile()
+
+	// 設置主 Collector，處理所有 API 請求和單頁訪問
 	c := colly.NewCollector(
 		colly.CacheDir("./cache"),
 		colly.AllowedDomains("www.gif-vif.com"),
 	)
 
-	// 設置延遲，這是爬蟲的好習慣
+	// 增強爬蟲限制
 	c.Limit(&colly.LimitRule{
 		DomainGlob:  "*",
-		Delay:       500 * time.Millisecond,
-		RandomDelay: 100 * time.Millisecond,
+		Delay:       2 * time.Second,
+		RandomDelay: 1 * time.Second,
+		Parallelism: 5,
 	})
 
 	// -----------------------------------------------------
-	// 核心邏輯: 處理 API 返回的 JSON 陣列 (使用 goquery)
+	// 規則 1: 處理 API 返回的 JSON 陣列 (列表解析)
 	// -----------------------------------------------------
 	c.OnResponse(func(r *colly.Response) {
-		// 1. 檢查是否為 JSON 格式
 		if strings.Contains(r.Headers.Get("Content-Type"), "application/json") {
 
-			// 設置變數接收 JSON 陣列 (字串陣列)
 			var htmlFragments []string
 			if err := json.Unmarshal(r.Body, &htmlFragments); err != nil {
 				log.Printf("[ERROR] 無法解析 API JSON 陣列: %v", err)
 				return
 			}
 
-			// 遍歷每一個 HTML 片段並使用 goquery 解析
 			for _, htmlContent := range htmlFragments {
 				doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 				if err != nil {
@@ -124,32 +102,24 @@ func main() {
 					continue
 				}
 
-				// 尋找包含 GIF 頁面連結的元素 (選擇器：a[href])
 				doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
 					link, exists := s.Attr("href")
 					if !exists {
 						return
 					}
 
-					// 檢查連結是否指向 GIF 頁面 (/gifs/) 且不是下載連結 (/download/)
 					if strings.Contains(link, "/gifs/") && !strings.Contains(link, "/download/") {
 						fullURL := r.Request.AbsoluteURL(link)
 						fmt.Printf("[FOUND] 找到 GIF 頁面連結: %s\n", fullURL)
 
-						// 異步訪問單一 GIF 頁面進行下載
-						go scrapeSingleGIFPage(fullURL)
+						c.Visit(fullURL)
 					}
 				})
 			}
 
 		} else {
-			// 如果不是 JSON，可能是訪問的首頁或錯誤頁面，使用 goquery 解析 response body
-			doc, err := goquery.NewDocumentFromReader(bytes.NewReader(r.Body))
-			if err != nil {
-				log.Printf("[ERROR] 解析 response body 失敗: %v", err)
-				return
-			}
-			// 尋找首頁中的 GIF 連結 (選擇器：div.gif-item a[href])
+			// 處理非 JSON 響應 (例如首頁)
+			doc, _ := goquery.NewDocumentFromReader(bytes.NewReader(r.Body))
 			doc.Find("div.gif-item a[href]").Each(func(i int, s *goquery.Selection) {
 				link, exists := s.Attr("href")
 				if !exists {
@@ -158,28 +128,49 @@ func main() {
 				if strings.Contains(link, "/gifs/") && !strings.Contains(link, "/download/") {
 					fullURL := r.Request.AbsoluteURL(link)
 					fmt.Printf("[FOUND] 找到 GIF 頁面連結: %s\n", fullURL)
-
-					// 異步訪問單一 GIF 頁面進行下載
-					go scrapeSingleGIFPage(fullURL)
+					c.Visit(fullURL)
 				}
 			})
 		}
 	})
 
-	// **【優化點】**：移除冗餘的 c.OnHTML 規則，所有列表解析邏輯皆在 OnResponse 內處理。
+	// -----------------------------------------------------
+	// 規則 2: 處理單一 GIF 頁面的數據提取與 JSON 寫入
+	// -----------------------------------------------------
+	c.OnHTML(`img.media-show`, func(e *colly.HTMLElement) {
+		// 1. 獲取 GIF 原始 URL (img 的 src 屬性)
+		gifURL := e.Attr("src")
+		fullGIFURL := e.Request.AbsoluteURL(gifURL)
+
+		// 2. 獲取 Title 和 Tags
+		title := e.Attr("alt")
+		if title == "" {
+			title = e.DOM.ParentsUntil("html").Find("title").Text()
+		}
+
+		tags := strings.Split(title, " ")
+		tagsString := strings.Join(tags, ", ")
+
+		// 3. 儲存到 JSON 檔案
+		rawMeme := ExportMeme{
+			Title:     title,
+			URL:       fullGIFURL,
+			Tags:      tagsString,
+			SourceURL: e.Request.URL.String(),
+		}
+		saveToJSON(rawMeme)
+	})
 
 	// -----------------------------------------------------
 	// 迭代呼叫 API
 	// -----------------------------------------------------
 	const offsetIncrement = 8
-	// 爬取數量限制：請根據需求調整這個值
-	maxOffset := 5000 //
+	maxOffset := 50 // 請依需求調整
 	startOffset := 0
 
-	fmt.Printf("=== 開始呼叫 API 進行爬取 (Max Offset: %d) ===\n", maxOffset)
+	fmt.Printf("=== 開始呼叫 API 進行數據收集 (Max Offset: %d) ===\n", maxOffset)
 
 	for offset := startOffset; offset <= maxOffset; offset += offsetIncrement {
-		// 構造 API URL
 		apiURL := fmt.Sprintf("https://www.gif-vif.com/loadMore.php?offset=%d", offset)
 
 		fmt.Printf("[API VISIT] 請求: %s\n", apiURL)
@@ -190,7 +181,6 @@ func main() {
 		}
 	}
 
-	// 等待所有異步的下載任務完成
 	c.Wait()
-	fmt.Println("\n=== API 呼叫、爬取與下載完成 ===")
+	fmt.Println("\n=== 數據收集與 JSON 輸出完成 ===")
 }

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go 梗圖隨機生成與搜尋網站</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #0056b3;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            align-items: center;
+        }
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        #random-btn {
+            background-color: #28a745;
+            color: white;
+        }
+        #random-btn:hover {
+            background-color: #218838;
+        }
+        #search-btn {
+            background-color: #007bff;
+            color: white;
+        }
+        #search-btn:hover {
+            background-color: #0056b3;
+        }
+        #results {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .meme-card {
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 10px;
+            text-align: center;
+            background-color: #fff;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+        }
+        .meme-card img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+        .meme-card p {
+            font-size: 0.9em;
+            color: #555;
+            margin: 0;
+            word-wrap: break-word;
+        }
+        .loading {
+            text-align: center;
+            font-style: italic;
+            color: #888;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Go 語言期末專案：梗圖搜尋與生成</h1>
+
+        <div class="controls">
+            <input type="text" id="search-input" placeholder="輸入關鍵字 (例如：cat, dog, dance...)">
+            <button id="search-btn">🔍 搜尋</button>
+            <button id="random-btn">🎲 隨機生成</button>
+        </div>
+
+        <div id="results">
+            <p class="loading">點擊上方按鈕開始搜尋或隨機生成。</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8080/api';
+        const resultsDiv = document.getElementById('results');
+        const searchInput = document.getElementById('search-input');
+        const randomBtn = document.getElementById('random-btn');
+        const searchBtn = document.getElementById('search-btn');
+
+        /**
+         * 渲染單個 GIF 數據到介面
+         * @param {Object} item - 包含 title, url, tags 的單個 JSON 物件
+         */
+        function renderMeme(item) {
+            const card = document.createElement('div');
+            card.className = 'meme-card';
+            
+            const img = document.createElement('img');
+            img.src = item.url; // 關鍵：使用 JSON 中的 URL
+            img.alt = item.title;
+            img.onerror = function() {
+                // 如果原始網站 URL 無效 (例如被移除)，顯示文字內容
+                img.style.display = 'none';
+                card.innerHTML += `<p>圖片載入失敗，內容：${item.title}</p>`;
+            };
+
+            const title = document.createElement('p');
+            title.innerHTML = `<strong>${item.title}</strong>`;
+
+            const tags = document.createElement('p');
+            tags.textContent = `標籤: ${item.tags}`;
+
+            card.appendChild(img);
+            card.appendChild(title);
+            card.appendChild(tags);
+            resultsDiv.appendChild(card);
+        }
+
+        /**
+         * 呼叫 API 並處理響應
+         * @param {string} endpoint - API 路徑，例如 '/random' 或 '/search?q=...'
+         */
+        async function fetchAPI(endpoint) {
+            resultsDiv.innerHTML = '<p class="loading">載入中...</p>';
+            try {
+                const response = await fetch(API_BASE_URL + endpoint);
+                const data = await response.json();
+
+                resultsDiv.innerHTML = ''; // 清空載入中訊息
+
+                if (response.status !== 200) {
+                    resultsDiv.innerHTML = `<p style="color: red;">API 錯誤: ${data.error || '未知錯誤'}</p>`;
+                    return;
+                }
+
+                // 處理隨機生成 (回傳單個物件)
+                if (endpoint === '/random') {
+                    renderMeme(data);
+                } 
+                // 處理搜尋 (回傳物件陣列)
+                else if (data.results && data.results.length > 0) {
+                    data.results.forEach(renderMeme);
+                } else {
+                    resultsDiv.innerHTML = `<p class="loading">找不到相關結果 (查詢: ${searchInput.value})。</p>`;
+                }
+
+            } catch (error) {
+                resultsDiv.innerHTML = `<p style="color: red;">網路錯誤或後端服務未啟動: ${error.message}</p>`;
+                console.error('Fetch Error:', error);
+            }
+        }
+
+        // --- 事件監聽 ---
+
+        // 隨機按鈕事件
+        randomBtn.addEventListener('click', () => {
+            fetchAPI('/random');
+        });
+
+        // 搜尋按鈕事件
+        searchBtn.addEventListener('click', () => {
+            const query = searchInput.value.trim();
+            if (query) {
+                fetchAPI('/search?q=' + encodeURIComponent(query));
+            } else {
+                resultsDiv.innerHTML = '<p class="loading">請輸入搜尋關鍵字。</p>';
+            }
+        });
+
+        // 允許按 Enter 鍵搜尋
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                searchBtn.click();
+            }
+        });
+
+    </script>
+</body>
+</html>
