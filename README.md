@@ -4,12 +4,12 @@
 API 服務： 提供兩個核心 API：GET /api/search 和 GET /api/random。  
 前端展示： 使用原生 HTML/CSS/JavaScript 呼叫後端 API，動態顯示內容。   
 
-main.go	Web 服務入口，負責啟動 Gin 路由器和 API 服務。
-database.go	資料庫核心層，包含 Meme 結構定義、SQLite 初始化、搜尋和隨機查詢函式。
-data_importer.go	數據匯入工具，用於讀取 memes_raw_data.json 並插入資料庫。
-spider.go	爬蟲工具，執行數據收集並輸出為 JSON 格式。
-index.html	前端展示頁面，使用 JavaScript 呼叫後端 API。
-memes_raw_data.json	爬蟲輸出的原始數據檔案（由 spider.go 生成）。
+main.go	Web 服務入口，負責啟動 Gin 路由器和 API 服務。  
+database.go	資料庫核心層，包含 Meme 結構定義、SQLite 初始化、搜尋和隨機查詢函式。  
+data_importer.go	數據匯入工具，用於讀取 memes_raw_data.json 並插入資料庫。  
+spider.go	爬蟲工具，執行數據收集並輸出為 JSON 格式。  
+index.html	前端展示頁面，使用 JavaScript 呼叫後端 API。  
+memes_raw_data.json	爬蟲輸出的原始數據檔案（由 spider.go 生成）。  
 
  執行：  
  ```
