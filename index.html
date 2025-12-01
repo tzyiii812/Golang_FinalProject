@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go 複製文隨機生成與搜尋網站</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f9;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+            background: white;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            text-align: center;
+            color: #0056b3;
+            margin-bottom: 25px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+            align-items: center;
+        }
+
+        input[type="text"] {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+
+        #random-btn {
+            background-color: #28a745;
+            color: white;
+        }
+
+        #random-btn:hover {
+            background-color: #218838;
+        }
+
+        #search-btn {
+            background-color: #007bff;
+            color: white;
+        }
+
+        #search-btn:hover {
+            background-color: #0056b3;
+        }
+
+        /* 專門為文本內容調整的樣式 */
+        #results {
+            /* 調整為單欄佈局，因為複製文是長文本 */
+            display: grid; 
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .meme-card {
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: left; /* 文本靠左對齊 */
+            background-color: #fff;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.08);
+            transition: box-shadow 0.2s;
+        }
+
+        .meme-card:hover {
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        /* 複製文內容區域 */
+        .meme-card pre {
+            background-color: #f8f8f8;
+            padding: 15px;
+            border-left: 5px solid #007bff;
+            border-radius: 4px;
+            white-space: pre-wrap; /* 自動換行 */
+            word-break: break-word;
+            font-family: 'Consolas', 'Courier New', monospace;
+            font-size: 1em;
+        }
+
+        .meme-card h3 {
+            margin-top: 0;
+            color: #0056b3;
+            border-bottom: 1px dashed #eee;
+            padding-bottom: 8px;
+        }
+        
+        .meme-card p {
+            font-size: 0.9em;
+            color: #555;
+            margin: 5px 0;
+        }
+
+        .loading {
+            text-align: center;
+            font-style: italic;
+            color: #888;
+        }
+
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>Go 語言期末專案：複製文搜尋與生成</h1>
+
+        <div class="controls">
+            <input type="text" id="search-input" placeholder="輸入關鍵字 (例如：笑話、耍冷、猜謎...)">
+            <button id="search-btn">🔍 搜尋</button>
+            <button id="random-btn">🎲 隨機生成</button>
+        </div>
+
+        <div id="results">
+            <p class="loading">點擊上方按鈕開始搜尋或隨機生成。</p>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8080/api';
+        const resultsDiv = document.getElementById('results');
+        const searchInput = document.getElementById('search-input');
+        const randomBtn = document.getElementById('random-btn');
+        const searchBtn = document.getElementById('search-btn');
+
+        /**
+         * 渲染單個複製文數據到介面
+         * @param {Object} item - 包含 title, url (內容), tags, source_url 的單個 JSON 物件
+         */
+        function renderMeme(item) {
+            const card = document.createElement('div');
+            card.className = 'meme-card';
+
+            // 1. 標題
+            const title = document.createElement('h3');
+            title.innerHTML = `<strong>${item.title}</strong>`;
+
+            // 2. 複製文內容 (使用 <pre> 標籤來保留格式和換行)
+            const content = document.createElement('pre');
+            content.textContent = item.url; 
+            
+            // 3. 標籤與來源連結
+            const tags = document.createElement('p');
+            tags.textContent = `標籤: ${item.tags}`;
+
+            const source = document.createElement('p');
+            source.innerHTML = `來源: <a href="${item.source_url}" target="_blank">${item.source_url}</a>`;
+
+            // 將元素附加到卡片
+            card.appendChild(title);
+            card.appendChild(content); // 顯示複製文內容
+            card.appendChild(tags);
+            card.appendChild(source);
+            
+            resultsDiv.appendChild(card);
+        }
+
+        /**
+         * 呼叫 API 並處理響應
+         * @param {string} endpoint - API 路徑，例如 '/random' 或 '/search?q=...'
+         */
+        async function fetchAPI(endpoint) {
+            resultsDiv.innerHTML = '<p class="loading">載入中...</p>';
+            try {
+                const response = await fetch(API_BASE_URL + endpoint);
+                const data = await response.json();
+
+                resultsDiv.innerHTML = ''; // 清空載入中訊息
+
+                if (response.status !== 200) {
+                    resultsDiv.innerHTML = `<p style="color: red;">API 錯誤: ${data.error || '未知錯誤'}</p>`;
+                    return;
+                }
+
+                // 處理隨機生成 (回傳單個物件)
+                if (endpoint === '/random') {
+                    renderMeme(data);
+                }
+                // 處理搜尋 (回傳物件陣列)
+                else if (data.results && data.results.length > 0) {
+                    // 搜尋結果是多個，清空 resultsDiv 
+                    data.results.forEach(renderMeme);
+                } else {
+                    resultsDiv.innerHTML = `<p class="loading">找不到相關結果 (查詢: ${searchInput.value})。</p>`;
+                }
+
+            } catch (error) {
+                resultsDiv.innerHTML = `<p style="color: red;">網路錯誤或後端服務未啟動: ${error.message}</p>`;
+                console.error('Fetch Error:', error);
+            }
+        }
+
+        // --- 事件監聽 ---
+
+        // 隨機按鈕事件
+        randomBtn.addEventListener('click', () => {
+            fetchAPI('/random');
+        });
+
+        // 搜尋按鈕事件
+        searchBtn.addEventListener('click', () => {
+            const query = searchInput.value.trim();
+            if (query) {
+                fetchAPI('/search?q=' + encodeURIComponent(query));
+            } else {
+                resultsDiv.innerHTML = '<p class="loading">請輸入搜尋關鍵字。</p>';
+            }
+        });
+
+        // 允許按 Enter 鍵搜尋
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                searchBtn.click();
+            }
+        });
+
+        // 首次載入時，自動執行一次隨機生成
+        fetchAPI('/random');
+
+    </script>
+</body>
+</html>
