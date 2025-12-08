@@ -81,6 +81,24 @@ func InitDB() error {
 	return nil
 }
 
+// ResetDBFiles 徹底刪除資料庫與 JSON 檔，確保下次執行是乾淨的
+func ResetDBFiles() {
+	files := []string{"./memes.db", "memes_raw_data.json"} // 這裡列出你要刪除的檔案
+
+	for _, file := range files {
+		// 嘗試刪除檔案
+		err := os.Remove(file)
+		if err != nil {
+			// 如果檔案不存在 (os.IsNotExist)，代表已經乾淨了，不用報錯
+			if !os.IsNotExist(err) {
+				log.Printf("[警告] 無法刪除舊檔案 %s: %v", file, err)
+			}
+		} else {
+			log.Printf("[系統] 已清除舊資料: %s", file)
+		}
+	}
+}
+
 func InsertMeme(m ExportMeme) error {
 	if db == nil {
 		return fmt.Errorf("資料庫尚未初始化")

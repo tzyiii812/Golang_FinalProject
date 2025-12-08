@@ -11,7 +11,7 @@ import (
 // 執行指令: go run main.go database.go
 func main() {
 	log.Println("=== 正在啟動伺服器 ===")
-
+	RunDataImporter()
 	// 1. 連線資料庫 (記得捕捉錯誤)
 	err := InitDB()
 	if err != nil {

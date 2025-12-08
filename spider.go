@@ -34,6 +34,8 @@ var plurkUsers = []string{
 
 func main() {
 	log.Println("[系統] 初始化資料庫...")
+	ResetDBFiles()
+
 	InitDB()
 	InitExportFile()
 

@@ -125,4 +125,4 @@ go run main.go database.go
 
 **Q4: 執行時報錯 `undefined: InitDB` 或 `undefined: ExportMeme`？**
 
-  * **A**: Go 語言編譯時需要包含所有相關檔案。請務必使用 `go run spider.go database.go` 或 `go run main.go database.go` 來執行，不能只打單一檔案名稱。
+  * **A**: Go 語言編譯時需要包含所有相關檔案。請務必使用 `go run spider.go database.go` 或 `go run main.go database.go data_importer.go` 來執行，不能只打單一檔案名稱。
