@@ -3,28 +3,17 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
-	"strings"
-	"sync"
 
-	_ "github.com/mattn/go-sqlite3" // 引入 SQLite 驅動
+	_ "github.com/mattn/go-sqlite3"
 )
 
-// DBFile 定義資料庫檔案名稱
-const DBFile = "project_memes.db"
-const ExportFile = "memes_raw_data.json"
+// =========================================================
+// [資料結構定義]
+// =========================================================
 
-// Meme 結構體用於存放資料庫中的單筆資料
-type Meme struct {
-	ID        int    `json:"id"`
-	Title     string `json:"title"`
-	URL       string `json:"url"` // 原始 GIF 檔案的 URL (現在是複製文內容)
-	Tags      string `json:"tags"`
-	SourceURL string `json:"source_url"`
-}
-
-// ExportMeme 結構體用於從 JSON 檔案中讀取數據（與爬蟲輸出的結構相同）
 type ExportMeme struct {
 	Title     string `json:"title"`
 	URL       string `json:"url"`
@@ -32,27 +21,23 @@ type ExportMeme struct {
 	SourceURL string `json:"source_url"`
 }
 
-var db *sql.DB             // 全域資料庫連線物件
-var outputMutex sync.Mutex // 用於多執行緒寫入 JSON 檔案的鎖
+type Meme = ExportMeme
 
-// -----------------------------------------------------
-// 爬蟲/匯入通用函式
-// -----------------------------------------------------
+var db *sql.DB
 
-// InitExportFile 初始化輸出檔案 (供 spider.go 調用)
+const ExportFile = "memes_raw_data.json"
+
+// =========================================================
+// [初始化與檔案操作]
+// =========================================================
+
 func InitExportFile() {
 	if err := os.Remove(ExportFile); err == nil {
 		log.Printf("[INFO] 舊的輸出檔案 %s 已刪除。", ExportFile)
-	} else if !os.IsNotExist(err) {
-		log.Printf("[ERROR] 無法移除舊檔案: %v", err)
 	}
 }
 
-// SaveToJSON 將單筆資料寫入 JSON 檔案 (供 spider.go 調用)
 func SaveToJSON(meme ExportMeme) {
-	outputMutex.Lock()
-	defer outputMutex.Unlock()
-
 	f, err := os.OpenFile(ExportFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Printf("[ERROR] 無法開啟 JSON 檔案: %v", err)
@@ -60,55 +45,81 @@ func SaveToJSON(meme ExportMeme) {
 	}
 	defer f.Close()
 
-	data, err := json.Marshal(meme)
-	if err != nil {
-		log.Printf("[ERROR] JSON 編碼失敗: %v", err)
-		return
-	}
-
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		log.Printf("[ERROR] 寫入 JSON 檔案失敗: %v", err)
-	}
+	data, _ := json.Marshal(meme)
+	f.Write(append(data, '\n'))
 }
 
-// -----------------------------------------------------
-// 資料庫操作函式
-// -----------------------------------------------------
+// =========================================================
+// [資料庫操作]
+// =========================================================
 
-// initDB 檢查並初始化 SQLite 資料庫連線和表格
-func initDB() {
+func InitDB() error {
 	var err error
-
-	// 連接或建立資料庫檔案
-	db, err = sql.Open("sqlite3", DBFile)
+	db, err = sql.Open("sqlite3", "./memes.db")
 	if err != nil {
-		log.Fatalf("無法開啟資料庫檔案 (%s): %v", DBFile, err)
+		return fmt.Errorf("開啟資料庫失敗: %v", err)
 	}
 
-	// 建立 memes 表格，URL 設為 UNIQUE 以避免重複匯入
-	query := `
+	if err = db.Ping(); err != nil {
+		return fmt.Errorf("無法連線資料庫: %v", err)
+	}
+
+	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS memes (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		title TEXT NOT NULL,
-		url TEXT NOT NULL UNIQUE,
+		title TEXT,
+		url TEXT UNIQUE,
 		tags TEXT,
-		source_url TEXT
-	);
-	`
-	_, err = db.Exec(query)
+		source_url TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);`
+
+	_, err = db.Exec(createTableSQL)
 	if err != nil {
-		log.Fatalf("建立資料表失敗: %v", err)
+		return fmt.Errorf("建立表格失敗: %v", err)
 	}
-	log.Println("資料庫初始化成功，表格 memes 已準備就緒。")
+	return nil
 }
 
-// SearchMemes 根據關鍵字在 title 或 tags 欄位中進行模糊查詢
-func SearchMemes(query string) ([]Meme, error) {
-	likeQuery := "%" + query + "%"
-	sqlQuery := `SELECT id, title, url, tags, source_url FROM memes 
-				WHERE title LIKE ? OR tags LIKE ? LIMIT 100`
+func InsertMeme(m ExportMeme) error {
+	if db == nil {
+		return fmt.Errorf("資料庫尚未初始化")
+	}
+	query := `INSERT OR IGNORE INTO memes (title, url, tags, source_url) VALUES (?, ?, ?, ?)`
+	_, err := db.Exec(query, m.Title, m.URL, m.Tags, m.SourceURL)
+	return err
+}
 
-	rows, err := db.Query(sqlQuery, likeQuery, likeQuery)
+func GetMemeCount() (int, error) {
+	if db == nil {
+		return 0, fmt.Errorf("資料庫未連線")
+	}
+	var count int
+	err := db.QueryRow("SELECT COUNT(*) FROM memes").Scan(&count)
+	return count, err
+}
+
+// ---------------------------------------------------------
+// [修正] 搜尋功能：加入對 URL (內容) 欄位的搜尋
+// ---------------------------------------------------------
+func SearchMemes(query string, mode string) ([]Meme, error) {
+	// [修正 1] SQL 加入 OR url LIKE ?
+	// 因為對於純文字梗圖，內容是存在 url 欄位裡的
+	baseSQL := `SELECT title, url, tags, source_url FROM memes WHERE (title LIKE ? OR tags LIKE ? OR url LIKE ?)`
+
+	filterSQL := ""
+	if mode == "image" {
+		filterSQL = ` AND url LIKE 'http%'`
+	} else if mode == "text" {
+		filterSQL = ` AND url NOT LIKE 'http%'`
+	}
+
+	finalSQL := baseSQL + filterSQL + ` ORDER BY id DESC LIMIT 50`
+
+	likeQuery := "%" + query + "%"
+
+	// [修正 2] 這裡要傳入三次 likeQuery (對應 title, tags, url)
+	rows, err := db.Query(finalSQL, likeQuery, likeQuery, likeQuery)
 	if err != nil {
 		return nil, err
 	}
@@ -117,48 +128,31 @@ func SearchMemes(query string) ([]Meme, error) {
 	memes := []Meme{}
 	for rows.Next() {
 		var m Meme
-		err := rows.Scan(&m.ID, &m.Title, &m.URL, &m.Tags, &m.SourceURL)
-		if err != nil {
-			return nil, err
+		if err := rows.Scan(&m.Title, &m.URL, &m.Tags, &m.SourceURL); err != nil {
+			log.Printf("讀取資料列失敗: %v", err)
+			continue
 		}
 		memes = append(memes, m)
 	}
 	return memes, nil
 }
 
-// GetRandomMeme 隨機獲取一筆資料
-func GetRandomMeme() (Meme, error) {
+func GetRandomMeme(mode string) (Meme, error) {
 	var m Meme
-	sqlQuery := `SELECT id, title, url, tags, source_url FROM memes 
-				ORDER BY RANDOM() LIMIT 1`
+	sqlQuery := `SELECT title, url, tags, source_url FROM memes`
 
-	row := db.QueryRow(sqlQuery)
-	err := row.Scan(&m.ID, &m.Title, &m.URL, &m.Tags, &m.SourceURL)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return Meme{}, nil // 資料庫為空
-		}
-		return Meme{}, err
+	whereClause := ""
+	if mode == "image" {
+		whereClause = ` WHERE url LIKE 'http%'`
+	} else if mode == "text" {
+		whereClause = ` WHERE url NOT LIKE 'http%'`
 	}
-	return m, nil
-}
 
-// InsertMeme 將單筆資料存入資料庫
-func InsertMeme(meme ExportMeme) error {
-	// 使用 ExportMeme 結構來接收數據
-	stmt, err := db.Prepare("INSERT INTO memes(title, url, tags, source_url) VALUES(?, ?, ?, ?)")
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
+	sqlQuery += whereClause + ` ORDER BY RANDOM() LIMIT 1`
 
-	_, err = stmt.Exec(meme.Title, meme.URL, meme.Tags, meme.SourceURL)
-	if err != nil {
-		// 處理 URL 唯一性約束錯誤，避免重複匯入時程式中斷
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-			return nil
-		}
-		return err
+	err := db.QueryRow(sqlQuery).Scan(&m.Title, &m.URL, &m.Tags, &m.SourceURL)
+	if err == sql.ErrNoRows {
+		return Meme{}, fmt.Errorf("找不到資料")
 	}
-	return nil
+	return m, err
 }

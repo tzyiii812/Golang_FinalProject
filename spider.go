@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -33,27 +34,106 @@ var plurkUsers = []string{
 
 func main() {
 	log.Println("[系統] 初始化資料庫...")
-	initDB()
+	InitDB()
 	InitExportFile()
 
 	// ---------------------------------------------------------
-	// [階段一 & 二] Chromedp (Threads / Plurk)
+	// [階段一] GIF 靜態爬蟲 (補回此功能)
+	// ---------------------------------------------------------
+	log.Println("=== [階段一] 開始爬取 GIF 梗圖 (Colly) ===")
+	RunGifSpider()
+
+	// ---------------------------------------------------------
+	// [階段二 & 三] Chromedp (Threads / Plurk)
 	// ---------------------------------------------------------
 	if len(threadsUsers) > 0 || len(plurkUsers) > 0 {
 		runChromedpScrapers()
 	}
 
 	// ---------------------------------------------------------
-	// [階段三] Colly (PTT)
+	// [階段四] Colly (PTT)
 	// ---------------------------------------------------------
-	log.Println("=== [階段三] 開始執行 PTT Joke 版爬蟲 (Colly) ===")
+	log.Println("=== [階段四] 開始執行 PTT Joke 版爬蟲 (Colly) ===")
 	RunPTTSpider()
 
 	log.Println("[系統] 所有任務執行完畢！")
 }
 
 // =========================================================
-// Chromedp 執行邏輯
+// 1. GIF 爬蟲 (原本遺失的功能)
+// =========================================================
+
+func RunGifSpider() {
+	c := colly.NewCollector(
+		colly.CacheDir("./cache"),
+		colly.AllowedDomains("www.gif-vif.com"),
+	)
+
+	c.Limit(&colly.LimitRule{
+		DomainGlob:  "*",
+		Delay:       2 * time.Second,
+		RandomDelay: 1 * time.Second,
+		Parallelism: 5,
+	})
+
+	// 處理列表頁與 API 回應
+	c.OnResponse(func(r *colly.Response) {
+		if strings.Contains(r.Headers.Get("Content-Type"), "application/json") {
+			var htmlFragments []string
+			if err := json.Unmarshal(r.Body, &htmlFragments); err == nil {
+				for _, htmlContent := range htmlFragments {
+					doc, _ := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
+					doc.Find("a[href]").Each(func(i int, s *goquery.Selection) {
+						link, exists := s.Attr("href")
+						if exists && strings.Contains(link, "/gifs/") && !strings.Contains(link, "/download/") {
+							c.Visit(r.Request.AbsoluteURL(link))
+						}
+					})
+				}
+			}
+		} else {
+			doc, _ := goquery.NewDocumentFromReader(bytes.NewReader(r.Body))
+			doc.Find("div.gif-item a[href]").Each(func(i int, s *goquery.Selection) {
+				link, exists := s.Attr("href")
+				if exists && strings.Contains(link, "/gifs/") && !strings.Contains(link, "/download/") {
+					c.Visit(r.Request.AbsoluteURL(link))
+				}
+			})
+		}
+	})
+
+	// 處理單一 GIF 頁面
+	c.OnHTML(`img.media-show`, func(e *colly.HTMLElement) {
+		gifURL := e.Request.AbsoluteURL(e.Attr("src"))
+		title := e.Attr("alt")
+		if title == "" {
+			title = e.DOM.ParentsUntil("html").Find("title").Text()
+		}
+		tags := strings.Join(strings.Split(title, " "), ", ")
+
+		meme := ExportMeme{
+			Title:     title,
+			URL:       gifURL,
+			Tags:      tags,
+			SourceURL: e.Request.URL.String(),
+		}
+
+		SaveToJSON(meme)
+		if err := InsertMeme(meme); err == nil {
+			log.Printf("[GIF SAVE] %s", title)
+		}
+	})
+
+	// 爬取前 5 頁 (offset 0, 8, 16...)
+	for offset := 0; offset <= 40; offset += 8 {
+		c.Visit(fmt.Sprintf("https://www.gif-vif.com/loadMore.php?offset=%d", offset))
+	}
+	c.Wait()
+	log.Println("=== GIF 爬蟲執行完畢 ===")
+}
+
+// =========================================================
+// Chromedp 執行邏輯 (Threads/Plurk)
 // =========================================================
 func runChromedpScrapers() {
 	log.Println(">>> 嘗試連線到 Chrome (ws://127.0.0.1:9222)...")
@@ -66,12 +146,12 @@ func runChromedpScrapers() {
 	log.Println(">>> 連線成功！開始執行 Chromedp 任務...")
 
 	if len(threadsUsers) > 0 {
-		log.Println("=== [階段一] 開始爬取 Threads ===")
+		log.Println("=== [階段二] 開始爬取 Threads ===")
 		runGenericScraper(ctx, threadsUsers, "Threads", scrapeThreadsUser)
 	}
 
 	if len(plurkUsers) > 0 {
-		log.Println("=== [階段二] 開始爬取 Plurk ===")
+		log.Println("=== [階段三] 開始爬取 Plurk ===")
 		runGenericScraper(ctx, plurkUsers, "Plurk", scrapePlurkUser)
 	}
 }
@@ -103,27 +183,27 @@ func runGenericScraper(ctx context.Context, targets []string, platform string, s
 }
 
 // =========================================================
-// 1. Threads 專用邏輯 (已修正：邊滾邊抓模式)
+// 2. Threads 專用邏輯 (使用 JS 上下震動滾動，避免卡死)
 // =========================================================
 
 func scrapeThreadsUser(parentCtx context.Context, userID string) ([]ExportMeme, error) {
 	url := fmt.Sprintf("https://www.threads.net/@%s", userID)
 
-	// [關鍵修改] 改為累積式儲存
 	var allMemes []ExportMeme
 	seenContent := make(map[string]bool)
 
+	// 設定總超時
 	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Minute)
 	defer cancel()
 
 	log.Printf("    -> 前往 Threads: %s", url)
 
-	// 1. 導航與前置作業
+	// 1. 導航
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(url),
 		chromedp.WaitVisible(`body`, chromedp.ByQuery),
-		// 關閉彈窗
 		chromedp.ActionFunc(func(c context.Context) error {
+			// 嘗試點擊可能的彈窗
 			ctxTO, cancelTO := context.WithTimeout(c, 2*time.Second)
 			defer cancelTO()
 			chromedp.Click(`div[role="dialog"] div[role="button"]`, chromedp.ByQuery).Do(ctxTO)
@@ -134,35 +214,44 @@ func scrapeThreadsUser(parentCtx context.Context, userID string) ([]ExportMeme, 
 		return nil, err
 	}
 
-	// 2. 邊滾動邊解析 (解決 Virtual DOM 導致舊文章消失的問題)
+	// 2. 滾動與解析
 	scrollCount := 10
 	for i := 0; i < scrollCount; i++ {
-		log.Printf("       ... 滾動與解析 %d/%d", i+1, scrollCount)
+		log.Printf("        ... 滾動與解析 %d/%d", i+1, scrollCount)
 
 		var currentHTML string
-		// 執行滾動並抓取當下 HTML
-		err := chromedp.Run(ctx,
-			chromedp.ActionFunc(func(c context.Context) error {
-				var currentURL string
-				chromedp.Evaluate(`window.location.href`, &currentURL).Do(c)
-				if strings.Contains(currentURL, "login") {
-					return fmt.Errorf("被導向登入頁面")
-				}
-				return nil
-			}),
+		// 使用 context timeout 防止滾動指令卡死
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 15*time.Second)
+
+		err := chromedp.Run(timeoutCtx,
+			// [解法] JS 上下震動法：
+			// 1. 滾到底
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight);`, nil),
-			chromedp.Sleep(4*time.Second), // Threads 載入較慢，給多一點時間
+			chromedp.Sleep(1*time.Second),
+
+			// 2. 往回拉 300px (讓瀏覽器覺得我們離開了底部)
+			chromedp.Evaluate(`window.scrollBy(0, -300);`, nil),
+			chromedp.Sleep(500*time.Millisecond),
+
+			// 3. 再滾到底 (觸發 "再次到達底部" 事件)
+			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight);`, nil),
+
+			// 4. 等待載入
+			chromedp.Sleep(3*time.Second),
+
+			// 5. 抓取 HTML
 			chromedp.OuterHTML("body", &currentHTML),
 		)
+		timeoutCancel() // 釋放這個回合的 timeout
+
 		if err != nil {
-			log.Printf("滾動中斷: %v", err)
-			break
+			log.Printf("滾動操作逾時或失敗 (跳過此輪): %v", err)
+			continue // 繼續下一輪，不要直接跳出
 		}
 
-		// 解析當前批次
+		// 解析
 		currentBatch := parseThreadsHTML(userID, url, currentHTML)
 
-		// 加入總表 (去重)
 		newCount := 0
 		for _, meme := range currentBatch {
 			if !seenContent[meme.URL] {
@@ -171,7 +260,7 @@ func scrapeThreadsUser(parentCtx context.Context, userID string) ([]ExportMeme, 
 				newCount++
 			}
 		}
-		log.Printf("           -> 本次滾動新增 %d 篇 (累計: %d)", newCount, len(allMemes))
+		log.Printf("            -> 本次滾動新增 %d 篇 (累計: %d)", newCount, len(allMemes))
 	}
 
 	return allMemes, nil
@@ -213,7 +302,7 @@ func parseThreadsHTML(author string, sourceURL string, html string) []ExportMeme
 }
 
 // =========================================================
-// 2. Plurk 專用邏輯 (邊滾邊抓)
+// 3. Plurk 專用邏輯 (使用 JS 上下震動滾動)
 // =========================================================
 
 func scrapePlurkUser(parentCtx context.Context, userID string) ([]ExportMeme, error) {
@@ -249,15 +338,26 @@ func scrapePlurkUser(parentCtx context.Context, userID string) ([]ExportMeme, er
 
 	scrollCount := 10
 	for i := 0; i < scrollCount; i++ {
-		log.Printf("       ... 滾動與解析 %d/%d", i+1, scrollCount)
+		log.Printf("        ... 滾動與解析 %d/%d", i+1, scrollCount)
 		var currentHTML string
-		err := chromedp.Run(ctx,
+
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 15*time.Second)
+		err := chromedp.Run(timeoutCtx,
+			// Plurk 策略：用力滑
 			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight);`, nil),
+			chromedp.Sleep(1*time.Second),
+			chromedp.Evaluate(`window.scrollBy(0, -500);`, nil), // 回拉多一點
+			chromedp.Sleep(500*time.Millisecond),
+			chromedp.Evaluate(`window.scrollTo(0, document.body.scrollHeight);`, nil),
+
 			chromedp.Sleep(3*time.Second),
 			chromedp.OuterHTML("body", &currentHTML),
 		)
+		timeoutCancel()
+
 		if err != nil {
-			break
+			log.Printf("滾動操作逾時 (跳過此輪): %v", err)
+			continue
 		}
 
 		currentBatch := parsePlurkHTML(userID, url, currentHTML)
@@ -270,7 +370,7 @@ func scrapePlurkUser(parentCtx context.Context, userID string) ([]ExportMeme, er
 				newCount++
 			}
 		}
-		log.Printf("           -> 本次滾動新增 %d 篇 (累計: %d)", newCount, len(allMemes))
+		log.Printf("            -> 本次滾動新增 %d 篇 (累計: %d)", newCount, len(allMemes))
 	}
 	return allMemes, nil
 }
@@ -294,7 +394,7 @@ func parsePlurkHTML(author string, sourceURL string, html string) []ExportMeme {
 }
 
 // =========================================================
-// 3. PTT 專用邏輯 (Colly 防斷線版)
+// 4. PTT 專用邏輯 (Colly 防斷線版)
 // =========================================================
 
 func RunPTTSpider() {
