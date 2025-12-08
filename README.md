@@ -106,6 +106,14 @@ go run main.go database.go
 
 -----
 
+ ## 測試檔
+
+```bash
+go test -v database.go database_test.go
+go test -v spider.go spider_test.go database.go
+```
+
+-----
 ## ❓ 常見問題排解
 
 **Q1: 執行爬蟲時顯示 `connection refused` 或無法連線 Chrome？**

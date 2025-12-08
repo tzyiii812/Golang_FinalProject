@@ -26,14 +26,30 @@ type Meme = ExportMeme
 var db *sql.DB
 
 const ExportFile = "memes_raw_data.json"
+const DBFile = "./memes.db"
 
 // =========================================================
 // [初始化與檔案操作]
 // =========================================================
 
 func InitExportFile() {
-	if err := os.Remove(ExportFile); err == nil {
-		log.Printf("[INFO] 舊的輸出檔案 %s 已刪除。", ExportFile)
+	// 這裡不再強制刪除，因為 ResetDBFiles 已經做了
+	// 僅做檢查或初始化邏輯
+}
+
+// ResetDBFiles 徹底刪除資料庫與 JSON 檔，確保下次執行是乾淨的
+func ResetDBFiles() {
+	files := []string{DBFile, ExportFile}
+
+	for _, file := range files {
+		err := os.Remove(file)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("[警告] 無法刪除舊檔案 %s: %v", file, err)
+			}
+		} else {
+			log.Printf("[系統] 已清除舊資料: %s", file)
+		}
 	}
 }
 
@@ -53,9 +69,10 @@ func SaveToJSON(meme ExportMeme) {
 // [資料庫操作]
 // =========================================================
 
-func InitDB() error {
+// InitDB 接收 dataSourceName 以便測試時可以切換到測試資料庫
+func InitDB(dataSourceName string) error {
 	var err error
-	db, err = sql.Open("sqlite3", "./memes.db")
+	db, err = sql.Open("sqlite3", dataSourceName)
 	if err != nil {
 		return fmt.Errorf("開啟資料庫失敗: %v", err)
 	}
@@ -81,24 +98,6 @@ func InitDB() error {
 	return nil
 }
 
-// ResetDBFiles 徹底刪除資料庫與 JSON 檔，確保下次執行是乾淨的
-func ResetDBFiles() {
-	files := []string{"./memes.db", "memes_raw_data.json"} // 這裡列出你要刪除的檔案
-
-	for _, file := range files {
-		// 嘗試刪除檔案
-		err := os.Remove(file)
-		if err != nil {
-			// 如果檔案不存在 (os.IsNotExist)，代表已經乾淨了，不用報錯
-			if !os.IsNotExist(err) {
-				log.Printf("[警告] 無法刪除舊檔案 %s: %v", file, err)
-			}
-		} else {
-			log.Printf("[系統] 已清除舊資料: %s", file)
-		}
-	}
-}
-
 func InsertMeme(m ExportMeme) error {
 	if db == nil {
 		return fmt.Errorf("資料庫尚未初始化")
@@ -117,12 +116,8 @@ func GetMemeCount() (int, error) {
 	return count, err
 }
 
-// ---------------------------------------------------------
-// [修正] 搜尋功能：加入對 URL (內容) 欄位的搜尋
-// ---------------------------------------------------------
 func SearchMemes(query string, mode string) ([]Meme, error) {
-	// [修正 1] SQL 加入 OR url LIKE ?
-	// 因為對於純文字梗圖，內容是存在 url 欄位裡的
+	// [修正] SQL 加入 OR url LIKE ? 支援內文搜尋
 	baseSQL := `SELECT title, url, tags, source_url FROM memes WHERE (title LIKE ? OR tags LIKE ? OR url LIKE ?)`
 
 	filterSQL := ""
@@ -136,7 +131,7 @@ func SearchMemes(query string, mode string) ([]Meme, error) {
 
 	likeQuery := "%" + query + "%"
 
-	// [修正 2] 這裡要傳入三次 likeQuery (對應 title, tags, url)
+	// [修正] 傳入三次 likeQuery
 	rows, err := db.Query(finalSQL, likeQuery, likeQuery, likeQuery)
 	if err != nil {
 		return nil, err
@@ -161,9 +156,9 @@ func GetRandomMeme(mode string) (Meme, error) {
 
 	whereClause := ""
 	if mode == "image" {
-		whereClause = ` WHERE source_url LIKE 'https://www.gif-vif.com/gifs/%'`
+		whereClause = ` WHERE url LIKE 'http%'`
 	} else if mode == "text" {
-		whereClause = ` WHERE source_url NOT LIKE 'https://www.gif-vif.com/gifs/%'`
+		whereClause = ` WHERE url NOT LIKE 'http%'`
 	}
 
 	sqlQuery += whereClause + ` ORDER BY RANDOM() LIMIT 1`

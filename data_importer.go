@@ -8,34 +8,27 @@ import (
 	"path/filepath"
 )
 
-// 設定一個更大的緩衝區大小（例如 5MB），以應對 bufio.Scanner: token too long 錯誤
-// 這是因為複製文（Copypasta）可能很長
 const MaxScanTokenSize = 5 * 1024 * 1024
 
-// RunDataImporter 讀取 JSON 檔案並匯入資料庫
 func RunDataImporter() {
-	// 檢查 JSON 檔案是否存在 (ExportFile 常數定義在 database.go 中)
 	if _, err := os.Stat(ExportFile); os.IsNotExist(err) {
-		log.Printf("[WARNING] 匯入失敗：%s 檔案不存在。請先執行 spider.go 爬蟲。", ExportFile)
+		log.Printf("[系統] 無匯入來源：%s 檔案不存在 (若為初次執行可忽略)", ExportFile)
 		return
 	}
 
 	filePath := filepath.Join(".", ExportFile)
-
 	file, err := os.Open(filePath)
 	if err != nil {
 		log.Fatalf("無法開啟 JSON 檔案 %s: %v", filePath, err)
 	}
 	defer file.Close()
 
-	// 關鍵修改：設置更大的掃描緩衝區來處理超長行
 	scanner := bufio.NewScanner(file)
 	buf := make([]byte, MaxScanTokenSize)
 	scanner.Buffer(buf, MaxScanTokenSize)
 
 	count := 0
-
-	log.Println("--- 開始從 JSON 檔案匯入資料 ---")
+	log.Println("--- [Importer] 開始從 JSON 檔案還原資料 ---")
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -44,28 +37,20 @@ func RunDataImporter() {
 		}
 
 		var rawMeme ExportMeme
-		// 1. 解析 JSON 行
 		if err := json.Unmarshal(line, &rawMeme); err != nil {
-			// 如果 JSON 解析失敗，會明確印出錯誤和內容
-			log.Printf("[ERROR] 解析 JSON 行失敗: %v, 內容: %s", err, string(line))
+			log.Printf("[ERROR] 解析 JSON 行失敗: %v", err)
 			continue
 		}
 
-		// 2. 插入資料庫
 		err := InsertMeme(rawMeme)
-		if err != nil {
-			// 如果 InsertMeme 回傳錯誤 (非 UNIQUE 錯誤)，則打印出來
-			log.Printf("[ERROR] 插入資料庫失敗 (%s): %v", rawMeme.URL, err)
-		} else {
+		if err == nil {
 			count++
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		// 如果發生 token too long 錯誤，現在應該已經被 MaxScanTokenSize 解決。
-		// 如果還有其他錯誤，則會在此處被捕獲。
 		log.Fatalf("讀取 JSON 檔案時發生錯誤: %v", err)
 	}
 
-	log.Printf("--- 資料匯入完成！總共匯入 %d 筆資料 ---", count)
+	log.Printf("--- [Importer] 資料匯入完成！本次新增 %d 筆資料 ---", count)
 }
