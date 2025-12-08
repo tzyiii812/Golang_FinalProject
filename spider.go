@@ -274,14 +274,25 @@ func parseThreadsHTML(author string, sourceURL string, html string) []ExportMeme
 	var results []ExportMeme
 
 	headerRegex := regexp.MustCompile(`(?s)^追蹤.*?更多`)
-	footerRegex := regexp.MustCompile(`(?s)讚.*?分享$`)
+
+	// [關鍵修正]
+	// 1. (?:翻譯\s*)?  --> 讓「翻譯」變成 footer 的一部分，且允許後面有空格。
+	// 2. \s* --> 在每個關鍵字(讚,回覆...)之間允許任意空白，避免文字黏在一起時失效。
+	// 3. [\d\.\s萬kK\+,]* --> 匹配數字及單位 (包含 290, 1.2萬, 100+)
+	footerRegex := regexp.MustCompile(`(?s)(?:翻譯\s*)?讚[\d\.\s萬kK\+,]*回覆[\d\.\s萬kK\+,]*轉發[\d\.\s萬kK\+,]*分享[\d\.\s萬kK\+,]*$`)
 
 	doc.Find("div[data-pressable-container='true']").Each(func(i int, s *goquery.Selection) {
 		s.Find("br").ReplaceWithHtml("\n")
 		rawText := strings.TrimSpace(s.Text())
 
+		rawText = strings.ReplaceAll(rawText, "\u00A0", " ") // 替換不換行空格
+
+		// 先清理頭部
 		cleanText := headerRegex.ReplaceAllString(rawText, "")
+
+		// 再清理尾部 (翻譯 + 數據按鈕)
 		cleanText = footerRegex.ReplaceAllString(cleanText, "")
+
 		cleanText = strings.TrimSpace(cleanText)
 
 		if len(cleanText) > 5 && !strings.Contains(cleanText, "Log in") && !strings.Contains(cleanText, "登入") {
@@ -430,9 +441,9 @@ func RunPTTSpider() {
 	c.SetRequestTimeout(30 * time.Second)
 	c.Limit(&colly.LimitRule{
 		DomainGlob:  "*",
-		Delay:       2000 * time.Millisecond,
-		RandomDelay: 1000 * time.Millisecond,
-		Parallelism: 1,
+		Delay:       2000 * time.Millisecond, //強制延遲，避免伺服器過載
+		RandomDelay: 1000 * time.Millisecond, //增加隨機性，模擬人類行為
+		Parallelism: 1,                       //單線程，避免過多連線導致被封鎖
 	})
 
 	var count int
@@ -486,7 +497,7 @@ func RunPTTSpider() {
 		post := ExportMeme{
 			Title:     title,
 			URL:       content,
-			Tags:      "PTT, Joke, " + strings.Join(strings.Fields(title), ", "),
+			Tags:      strings.Join(strings.Fields(title), ", "),
 			SourceURL: r.Request.URL.String(),
 		}
 
