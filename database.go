@@ -143,9 +143,9 @@ func GetRandomMeme(mode string) (Meme, error) {
 
 	whereClause := ""
 	if mode == "image" {
-		whereClause = ` WHERE url LIKE 'http%'`
+		whereClause = ` WHERE source_url LIKE 'https://www.gif-vif.com/gifs/%'`
 	} else if mode == "text" {
-		whereClause = ` WHERE url NOT LIKE 'http%'`
+		whereClause = ` WHERE source_url NOT LIKE 'https://www.gif-vif.com/gifs/%'`
 	}
 
 	sqlQuery += whereClause + ` ORDER BY RANDOM() LIMIT 1`
