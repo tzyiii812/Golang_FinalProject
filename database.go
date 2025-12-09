@@ -122,9 +122,9 @@ func SearchMemes(query string, mode string) ([]Meme, error) {
 
 	filterSQL := ""
 	if mode == "image" {
-		filterSQL = ` AND url LIKE 'http%'`
+		filterSQL = ` AND source_url LIKE 'https://www.gif-vif.com/gifs%'`
 	} else if mode == "text" {
-		filterSQL = ` AND url NOT LIKE 'http%'`
+		filterSQL = ` AND source_url NOT LIKE 'https://www.gif-vif.com/gifs/%'`
 	}
 
 	finalSQL := baseSQL + filterSQL + ` ORDER BY id DESC LIMIT 50`
@@ -156,9 +156,9 @@ func GetRandomMeme(mode string) (Meme, error) {
 
 	whereClause := ""
 	if mode == "image" {
-		whereClause = ` WHERE url LIKE 'http%'`
+		whereClause = ` WHERE source_url LIKE 'https://www.gif-vif.com/gifs%'`
 	} else if mode == "text" {
-		whereClause = ` WHERE url NOT LIKE 'http%'`
+		whereClause = ` WHERE source_url NOT LIKE 'https://www.gif-vif.com/gifs%'`
 	}
 
 	sqlQuery += whereClause + ` ORDER BY RANDOM() LIMIT 1`
