@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="referrer" content="no-referrer">
+    <title>Meme Search Engine</title>
+    <style>
+        body { font-family: "Microsoft JhengHei", sans-serif; background-color: #f4f4f4; padding: 20px; text-align: center; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        
+        .search-box { margin-bottom: 20px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        input[type="text"] { padding: 10px; width: 60%; font-size: 16px; border: 1px solid #ddd; border-radius: 5px; }
+        select { padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        button { padding: 10px 20px; font-size: 16px; border: none; border-radius: 5px; cursor: pointer; transition: 0.3s; }
+        
+        .btn-search { background-color: #007bff; color: white; }
+        .btn-search:hover { background-color: #0056b3; }
+        
+        .btn-random { background-color: #28a745; color: white; }
+        .btn-random:hover { background-color: #1e7e34; }
+
+        #results { margin-top: 20px; text-align: left; }
+        .meme-card { background: #fff; border: 1px solid #eee; padding: 15px; margin-bottom: 15px; border-radius: 8px; }
+        .meme-title { font-weight: bold; font-size: 1.1em; color: #444; margin-bottom: 5px; }
+        .meme-tags { color: #888; font-size: 0.9em; margin-bottom: 10px; }
+        
+        .meme-media { max-width: 100%; height: auto; border-radius: 5px; margin-top: 10px; display: block; }
+        .meme-text { background: #f9f9f9; padding: 15px; border-left: 5px solid #007bff; white-space: pre-wrap; font-size: 1.1em; color: #333; line-height: 1.6; }
+        
+        .source-link { display: block; margin-top: 10px; font-size: 0.8em; color: #aaa; text-decoration: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🚀 梗圖/複製文搜尋引擎</h1>
+    
+    <div class="search-box">
+        <select id="searchMode">
+            <option value="all">全部</option>
+            <option value="image">只找GIF</option>
+            <option value="text">只找文章</option>
+        </select>
+        
+        <input type="text" id="searchInput" placeholder="輸入關鍵字...">
+        
+        <button class="btn-search" onclick="doSearch()">搜尋</button>
+        <button class="btn-random" onclick="doRandom()">🎲 隨機抽取</button>
+    </div>
+
+    <div id="results"></div>
+</div>
+
+<script>
+    document.getElementById("searchInput").addEventListener("keypress", function(event) {
+        if (event.key === "Enter") {
+            doSearch();
+        }
+    });
+
+    // 搜尋功能
+    async function doSearch() {
+        const query = document.getElementById('searchInput').value;
+        const mode = document.getElementById('searchMode').value;
+        const resultsDiv = document.getElementById('results');
+        
+        resultsDiv.innerHTML = '<p style="text-align:center;">搜尋中...</p>';
+
+        try {
+            const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&mode=${mode}`);
+            const data = await res.json();
+
+            resultsDiv.innerHTML = '';
+            if (!data || data.length === 0) {
+                resultsDiv.innerHTML = '<p style="text-align:center;">找不到結果 🥲</p>';
+                return;
+            }
+
+            data.forEach(meme => {
+                renderMeme(meme);
+            });
+        } catch (err) {
+            console.error(err);
+            resultsDiv.innerHTML = '<p style="text-align:center; color:red;">發生錯誤</p>';
+        }
+    }
+
+    // [修正] 隨機功能：現在會讀取下拉選單的模式
+    async function doRandom() {
+        const mode = document.getElementById('searchMode').value; // 取得目前選單的值
+        const resultsDiv = document.getElementById('results');
+        
+        let modeText = "隨機";
+        if (mode === 'image') modeText = "隨機圖片";
+        if (mode === 'text') modeText = "隨機文字";
+
+        resultsDiv.innerHTML = `<p style="text-align:center;">正在抽取${modeText}...</p>`;
+
+        try {
+            // 傳送 mode 參數
+            const res = await fetch(`/api/random?mode=${mode}`);
+            const meme = await res.json();
+            
+            resultsDiv.innerHTML = '';
+            if (meme.error || !meme.url) {
+                resultsDiv.innerHTML = `<p style="text-align:center;">資料庫裡找不到符合「${mode}」的資料 🥲</p>`;
+            } else {
+                renderMeme(meme);
+            }
+        } catch (err) {
+            console.error(err);
+            resultsDiv.innerHTML = '<p style="text-align:center; color:red;">發生錯誤</p>';
+        }
+    }
+
+    function renderMeme(meme) {
+        const div = document.createElement('div');
+        div.className = 'meme-card';
+        
+        const url = meme.url || "";
+        const lowerUrl = url.toLowerCase();
+        let contentHtml = '';
+
+        // 判斷邏輯
+        const isImage = lowerUrl.startsWith('http') && (
+            lowerUrl.includes('.gif') || 
+            lowerUrl.includes('.jpg') || 
+            lowerUrl.includes('.jpeg') || 
+            lowerUrl.includes('.png') || 
+            lowerUrl.includes('.webp')
+        );
+        const isVideo = lowerUrl.startsWith('http') && (lowerUrl.includes('.mp4') || lowerUrl.includes('.webm'));
+
+        if (isImage) {
+            contentHtml = `<img src="${url}" class="meme-media" alt="${escapeHtml(meme.title)}" loading="lazy">`;
+        } else if (isVideo) {
+            contentHtml = `<video src="${url}" class="meme-media" autoplay loop muted playsinline></video>`;
+        } else {
+            contentHtml = `<div class="meme-text">${escapeHtml(url)}</div>`;
+        }
+
+        div.innerHTML = `
+            <div class="meme-title">${escapeHtml(meme.title)}</div>
+            <div class="meme-tags">🏷️ ${escapeHtml(meme.tags || '無標籤')}</div>
+            <div class="meme-content">${contentHtml}</div>
+            <a href="${meme.source_url}" target="_blank" class="source-link">🔗 來源連結</a>
+        `;
+        document.getElementById('results').appendChild(div);
+    }
+
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
+</script>
+
+</body>
+</html>
